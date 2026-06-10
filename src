@@ -1,0 +1,187 @@
+"""
+Author: [M.Arf / mdarf1011-ctrl]
+Physics Framework: Symplectic Euler Numerical Integration
+Visual Pipeline: Matplotlib 3D Orthographic Engine
+
+OVERVIEW:
+    This script executes a high-fidelity numerical physics simulation of a 
+    satellite in an inclined orbit around a rotating Earth. It maps out 
+    both global inertial tracking and localized reference frames in real-time.
+
+TECHNICAL SPECIFICATIONS & MATHEMATICAL BASES:
+    1. Gravitational Engine: Uses 3D Newtonian gravity with a customizable 
+       softening constraint parameter to calculate local node accelerations.
+    2. Dynamic RTN Frame Basis: Computes an instantaneous local coordinate 
+       tripod attached directly to the moving satellite mass center:
+       - Radial Vector (Red / U): Points directly outward from the Earth's center.
+       - Normal Vector (Blue / W): Perpendicular to the plane of the orbit 
+         via the vector cross product (Position x Velocity).
+       - Tangential Vector (Green / V): Points along the instantaneous direction 
+         of travel, completed via the cross product (Normal x Radial).
+    3. Planetary Reference: Animates a cyan wireframe mesh sphere synchronized 
+       to Earth's true angular rotation velocity (w_earth = 7.292115e-5 rad/s).
+    4. Viewport Optics: Forced parallel affine orthographic projection 
+       matrix to eliminate perspective distortion and maintain strict scaling.
+
+================================================================================
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
+# ── Constants ──────────────────────────────
+G          = 6.674e-11
+M_earth    = 5.972e24       
+M_sc       = 1.111e4       
+SOFTENING  = 1e7            
+dt         = 60.00         
+N_STEPS    = 10000          # number of simulation steps
+
+r_earth_sc = 4e7            # initial separation between Earth and satellite
+
+n_particles = 2  
+
+data = np.zeros((n_particles, N_STEPS, 3))  
+vel_data = np.zeros((N_STEPS, 3))  
+
+def initial_state():
+    masses = np.array([M_earth, M_sc])
+
+    pos = np.zeros((n_particles, 3))
+    pos[0] = np.array([0.0, 0.0, 0.0])         # Earth at origin
+    pos[1] = np.array([r_earth_sc, 0.0, 0.0])  # Satellite on X-axis
+
+    cv_sc = np.sqrt((G * M_earth) / r_earth_sc)
+    
+    vel = np.zeros((n_particles, 3))
+    vel[0] = np.array([0.0, 0.0, 0.0])     
+    vel[1] = np.array([0.0, cv_sc, cv_sc * 0.5])
+
+    return pos, vel, masses
+
+def acceleration(pos, masses, softening=SOFTENING,G=G):
+    acceleration = np.zeros((n_particles, 3))
+    for i in range(n_particles):
+        for j in range(n_particles):
+            if i == j:
+                continue # skip self-interaction
+                
+        # displacement vector from initial position
+            dx = pos[j,0] - pos[i,0]
+            dy = pos[j,1] - pos[i,1]
+            dz = pos[j,2] - pos[i,2]
+
+            r_vec = np.array([dx, dy, dz])  
+            r_mag = np.sqrt(dx**2 + dy**2 + dz**2 + softening**2)       #magnitude of distance
+            r_hat = r_vec / ((np.sqrt(dx**2 + dy**2 + dz**2)) + 1e-20)     # unit vector
+
+            a_vec = (G * masses[j] /(r_mag**2 ))* r_hat
+
+            acceleration[i] += a_vec  # accumulate acceleration contributions
+
+    return acceleration
+
+def update_positions(pos, vel, acc, step_idx, dt=dt):
+    for i in range(n_particles):    
+        vel[i,0] += acc[i,0] * dt
+        vel[i,1] += acc[i,1] * dt
+        vel[i,2] += acc[i,2] * dt
+
+        pos[i,0] += vel[i,0] * dt
+        pos[i,1] += vel[i,1] * dt
+        pos[i,2] += vel[i,2] * dt
+
+        data[i, step_idx] = pos[i].copy()  # store position for animation
+        
+    vel_data[step_idx] = vel[1].copy()  # store satellite velocity for potential analysis
+
+# main code execution
+pos, vel, masses = initial_state()
+
+for fps in range(N_STEPS):
+    updated_a = acceleration(pos, masses)
+    update_positions(pos, vel, updated_a, step_idx=fps, dt=dt)
+
+#____PLOT____________
+fig = plt.figure(figsize=(10, 8), facecolor='black')
+ax = fig.add_subplot(111, projection='3d')
+ax.set_proj_type('ortho')
+ax.set_facecolor('black')
+ax.xaxis.pane.fill = ax.yaxis.pane.fill = ax.zaxis.pane.fill = False
+ax.tick_params(colors='white')
+ax.set_zlabel('Z (m)', color='#555', fontsize=8)
+
+# Set dynamic viewing bounds around Earth
+ax.set_xlim([-5e7, 5e7])
+ax.set_ylim([-5e7, 5e7])
+ax.set_zlim([-5e7, 5e7])
+
+earth_dot, = ax.plot(0, 0, 0,   'bo', markersize=95, label="Earth")
+
+sc_line, = ax.plot([], [], [], color="#A60599", lw=1.5, alpha=0.7)
+sc_dot, = ax.plot([], [], [],color = "#f2f9fa", markersize= 5, label="satellite", marker = 'o')
+
+#fps_text = ax.text2D(0.05, 0.95, '', transform=ax.transAxes,
+#                        color='white', fontsize=9)
+
+r_earth = 6.371e6
+u_grid, v_grid = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j] #u_grid for azimuthal angle, v_grid for polar angle
+x_sphere = r_earth * np.cos(u_grid) * np.sin(v_grid)
+y_sphere = r_earth * np.sin(u_grid) * np.sin(v_grid)
+z_sphere = r_earth * np.cos(v_grid)
+
+earth_wireframe = [ax.plot_wireframe(x_sphere, y_sphere, 
+                    z_sphere, color='cyan', alpha=0.3,
+                     linewidth=0.5)]  # store wireframe reference for animation updates
+
+quiver_data = [ax.quiver(0,0,0,0,0,0)for _ in range(3)]   
+ 
+w_earth = 7.2921150e-5  # Earth's angular velocity in radians per second
+
+def animate(frame):
+    #fps_text.set_text(f'frame: {frame} / {N_STEPS}')
+
+    # Slice the historical data array up to the current frame index
+    x_data = data[1, :frame, 0]
+    y_data = data[1, :frame, 1]
+    z_data = data[1, :frame, 2]
+    
+    sc_line.set_data(x_data, y_data)
+    sc_line.set_3d_properties(z_data)
+
+    if frame > 0:
+        sc_dot.set_data([data[1, frame, 0]], [data[1, frame, 1]])
+        sc_dot.set_3d_properties([data[1, frame, 2]])
+
+        current_pos = data[1, frame]
+        current_vel = vel_data[frame]
+
+        R_hat = -(current_pos / np.linalg.norm(current_pos))
+        N_vec = np.cross(current_pos, current_vel)
+        N_hat = N_vec / (np.linalg.norm(N_vec) + 1e-20)
+        T_hat = np.cross(N_hat, -R_hat)
+
+        scale =  8e6
+        quiver_data[0].remove()
+        quiver_data[1].remove()
+        quiver_data[2].remove()
+
+        quiver_data[0] = ax.quiver(*current_pos, *(R_hat * scale), color='red', lw=1.5)   
+        quiver_data[1] = ax.quiver(*current_pos, *(T_hat * scale), color='green', lw=1.5)  
+        quiver_data[2] = ax.quiver(*current_pos, *(N_hat * scale), color='blue', lw=1.5)   
+
+        earth_wireframe[0].remove()   
+
+        x_rot = x_sphere * np.cos(w_earth * frame * dt) - y_sphere * np.sin(w_earth * frame * dt)
+        y_rot = x_sphere * np.sin(w_earth * frame * dt) + y_sphere * np.cos(w_earth * frame * dt)
+        
+        earth_wireframe[0] = ax.plot_wireframe(x_rot, y_rot, z_sphere, color='cyan', alpha=0.4, linewidth=0.8)
+        
+    return sc_line, sc_dot
+
+ani = animation.FuncAnimation(fig, animate, frames=N_STEPS, interval=20, blit=False)
+
+##ani.save("two_body_simulation.gif", writer=writer)
+
+plt.show()
